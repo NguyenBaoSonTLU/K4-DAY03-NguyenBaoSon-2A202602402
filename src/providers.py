@@ -6,6 +6,7 @@ Hỗ trợ Native Tool Calling và chuyển đổi linh hoạt qua biến môi t
 import os
 import sys
 import json
+import re
 from typing import Dict, Any, List
 from dotenv import load_dotenv
 
@@ -36,21 +37,84 @@ class MockOfflineProvider(BaseLLMProvider):
 
     def generate_with_tools(self, prompt: str, tools_schema: List[Dict[str, Any]], system_prompt: str = "") -> Dict[str, Any]:
         prompt_lower = prompt.lower()
-        
-        # Mô phỏng nhận diện intent gọi Tool
-        if "sv2026001" in prompt_lower and "đặt lịch" in prompt_lower:
+
+        student_match = re.search(r"\bSV\d{7}\b", prompt, re.IGNORECASE)
+        student_id = student_match.group(0).upper() if student_match else "SV2026001"
+        datetime_match = re.search(
+            r"\b\d{1,2}:\d{2}(?:\s+ngày)?\s+\d{2}/\d{2}/\d{4}",
+            prompt,
+            re.IGNORECASE
+        )
+        datetime_str = (
+            re.sub(r"\s+ngày\s+", " ", datetime_match.group(0), flags=re.IGNORECASE)
+            if datetime_match else "14:00 15/09/2026"
+        )
+        advisor_by_student = {
+            "SV2026001": "PGS.TS Nguyễn Văn A",
+            "SV2026002": "TS. Lê Thị B"
+        }
+        advisor_name = advisor_by_student.get(student_id, "PGS.TS Nguyễn Văn A")
+        has_history = "lịch sử thực thi action/observation" in prompt_lower
+
+        # Khi đã có Observation, mô phỏng quyết định bước tiếp theo của Agent.
+        if has_history and '"tool": "schedule_appointment"' in prompt:
             return {
-                "type": "tool_call",
-                "tool_name": "schedule_appointment",
-                "arguments": {"student_id": "SV2026001", "datetime_str": "14:00 15/09/2026", "advisor_name": "PGS.TS Nguyễn Văn A"},
-                "thought": "Người dùng yêu cầu đặt lịch hẹn tư vấn cho sinh viên SV2026001. Tôi sẽ gọi tool schedule_appointment."
+                "type": "text",
+                "content": "[Mock Agent Response]: Lịch hẹn tư vấn đã được đặt thành công theo yêu cầu.",
+                "thought": "Đã nhận kết quả đặt lịch thành công, tôi sẽ thông báo kết quả cho người dùng."
             }
-        elif "sv2026001" in prompt_lower or "tra cứu" in prompt_lower:
+
+        if has_history and '"tool": "academic_query"' in prompt:
+            if '"status": "NOT_FOUND"' in prompt:
+                return {
+                    "type": "text",
+                    "content": f"Không tìm thấy dữ liệu sinh viên có mã '{student_id}'. Vui lòng kiểm tra lại mã sinh viên.",
+                    "thought": "Tool trả về NOT_FOUND nên tôi phải thông báo chính xác và không bịa đặt dữ liệu."
+                }
+
+            if "đặt lịch" in prompt_lower:
+                return {
+                    "type": "tool_call",
+                    "tool_name": "schedule_appointment",
+                    "arguments": {
+                        "student_id": student_id,
+                        "datetime_str": datetime_str,
+                        "advisor_name": advisor_name
+                    },
+                    "thought": "Đã tra cứu được cố vấn học tập; tôi sẽ tiếp tục gọi tool schedule_appointment."
+                }
+
+            return {
+                "type": "text",
+                "content": f"[Mock Agent Response]: Đã tra cứu thành công thông tin của sinh viên {student_id}.",
+                "thought": "Đã có kết quả tra cứu nên tôi sẽ tổng hợp câu trả lời."
+            }
+
+        # Mô phỏng nhận diện intent gọi Tool
+        if "đặt lịch" in prompt_lower and "tra cứu" in prompt_lower:
             return {
                 "type": "tool_call",
                 "tool_name": "academic_query",
-                "arguments": {"student_id": "SV2026001"},
-                "thought": "Người dùng muốn tra cứu thông tin học vụ của sinh viên SV2026001. Tôi sẽ gọi tool academic_query."
+                "arguments": {"student_id": student_id},
+                "thought": "Yêu cầu cần nhiều bước; trước tiên tôi sẽ tra cứu cố vấn học tập của sinh viên."
+            }
+        if "đặt lịch" in prompt_lower:
+            return {
+                "type": "tool_call",
+                "tool_name": "schedule_appointment",
+                "arguments": {
+                    "student_id": student_id,
+                    "datetime_str": datetime_str,
+                    "advisor_name": advisor_name
+                },
+                "thought": f"Người dùng yêu cầu đặt lịch cho {student_id}; tôi sẽ gọi tool schedule_appointment."
+            }
+        elif student_match or "tra cứu" in prompt_lower:
+            return {
+                "type": "tool_call",
+                "tool_name": "academic_query",
+                "arguments": {"student_id": student_id},
+                "thought": f"Người dùng muốn tra cứu thông tin học vụ của {student_id}; tôi sẽ gọi tool academic_query."
             }
         else:
             return {
